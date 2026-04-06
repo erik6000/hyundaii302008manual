@@ -1,6 +1,10 @@
 # Hyundai i30 2008 Manual Navigator
 
-Streamlit app for browsing the `Brake System` section of the Hyundai i30 FD workshop manual as a tree, with the selected section rendered in a scrollable reading pane.
+Streamlit app for browsing the Hyundai i30 FD workshop manual as a tree, with the selected section rendered in a scrollable reading pane.
+
+Available sections (tabs):
+- **Brake System** – brake components, ABS, parking brake, repair procedures
+- **Body** – doors, hood, bumpers, seats, and other body components
 
 Repository:
 - [GitHub repo](https://github.com/erik6000/hyundaii302008manual)
