@@ -53,8 +53,14 @@ def finalize_heading(heading: str) -> str:
     return heading.strip()
 
 
+def get_pdf_cache_key(pdf_path: Path) -> str:
+    stat = pdf_path.stat()
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+
 @st.cache_data(show_spinner=False)
-def extract_brake_sections(pdf_path: str) -> list[dict[str, object]]:
+def extract_brake_sections(pdf_path: str, pdf_cache_key: str) -> list[dict[str, object]]:
+    _ = pdf_cache_key
     reader = PdfReader(pdf_path)
     results: list[dict[str, object]] = []
     seen: set[tuple[str, int]] = set()
@@ -121,12 +127,20 @@ def section_ranges(sections: list[dict[str, object]], total_pages: int) -> list[
 
 
 @st.cache_data(show_spinner=False)
-def get_total_pages(pdf_path: str) -> int:
+def get_total_pages(pdf_path: str, pdf_cache_key: str) -> int:
+    _ = pdf_cache_key
     return len(PdfReader(pdf_path).pages)
 
 
 @st.cache_data(show_spinner=False)
-def render_section_pages(pdf_path: str, start_page: int, end_page: int, zoom: float = 1.6) -> list[tuple[int, bytes]]:
+def render_section_pages(
+    pdf_path: str,
+    start_page: int,
+    end_page: int,
+    pdf_cache_key: str,
+    zoom: float = 1.6,
+) -> list[tuple[int, bytes]]:
+    _ = pdf_cache_key
     doc = fitz.open(pdf_path)
     pages: list[tuple[int, bytes]] = []
     for page_number in range(start_page, end_page + 1):
@@ -169,14 +183,15 @@ if not PDF_PATH.exists():
     st.error(f"PDF saknas: {PDF_PATH}")
     st.stop()
 
-all_sections = extract_brake_sections(str(PDF_PATH))
+pdf_cache_key = get_pdf_cache_key(PDF_PATH)
+all_sections = extract_brake_sections(str(PDF_PATH), pdf_cache_key)
 brake_sections = [section for section in all_sections if section["parts"][0] == "Brake System"]
 
 if not brake_sections:
     st.error("Inga Brake System-sektioner hittades i PDF:en.")
     st.stop()
 
-page_ranges = section_ranges(brake_sections, get_total_pages(str(PDF_PATH)))
+page_ranges = section_ranges(brake_sections, get_total_pages(str(PDF_PATH), pdf_cache_key))
 tree = build_tree(page_ranges)
 
 if "selected_heading" not in st.session_state:
@@ -238,6 +253,7 @@ with right_col:
         str(PDF_PATH),
         int(selected["start_page"]),
         int(selected["end_page"]),
+        pdf_cache_key,
     )
 
     with st.container(height=950):
