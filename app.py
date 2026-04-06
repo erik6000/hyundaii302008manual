@@ -54,7 +54,7 @@ def finalize_heading(heading: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def extract_brake_sections(pdf_path: str) -> list[dict[str, object]]:
+def extract_sections(pdf_path: str, section_prefixes: tuple[str, ...]) -> list[dict[str, object]]:
     reader = PdfReader(pdf_path)
     results: list[dict[str, object]] = []
     seen: set[tuple[str, int]] = set()
@@ -64,7 +64,7 @@ def extract_brake_sections(pdf_path: str) -> list[dict[str, object]]:
         index = 0
         while index < len(lines):
             line = lines[index]
-            if not line.startswith("Brake System > "):
+            if not any(line.startswith(f"{prefix} > ") for prefix in section_prefixes):
                 index += 1
                 continue
 
@@ -160,29 +160,37 @@ def render_tree(node: dict[str, dict[str, object]], path: list[str] | None = Non
                 st.session_state.selected_heading = child["heading"]
 
 
-st.set_page_config(page_title="Hyundai i30 Brake System", layout="wide")
+st.set_page_config(page_title="Hyundai i30 Service Manual Navigator", layout="wide")
 
-st.title("Hyundai i30 brake system navigator")
+st.title("Hyundai i30 service manual navigator")
 st.caption("Träd till vänster. Hela vald sektion till höger i ett scrollbart läsfönster.")
 
 if not PDF_PATH.exists():
     st.error(f"PDF saknas: {PDF_PATH}")
     st.stop()
 
-all_sections = extract_brake_sections(str(PDF_PATH))
-brake_sections = [section for section in all_sections if section["parts"][0] == "Brake System"]
+supported_sections = ("Brake System", "Body Electrical System")
+all_sections = extract_sections(str(PDF_PATH), supported_sections)
+sections_by_main = {
+    section_name: [section for section in all_sections if section["parts"][0] == section_name]
+    for section_name in supported_sections
+}
 
-if not brake_sections:
-    st.error("Inga Brake System-sektioner hittades i PDF:en.")
+if not any(sections_by_main.values()):
+    st.error("Inga Brake System- eller Body Electrical System-sektioner hittades i PDF:en.")
     st.stop()
 
-page_ranges = section_ranges(brake_sections, get_total_pages(str(PDF_PATH)))
+available_main_sections = [name for name, items in sections_by_main.items() if items]
+selected_main = st.selectbox("Huvudsektion", options=available_main_sections, index=0)
+main_sections = sections_by_main[selected_main]
+
+page_ranges = section_ranges(main_sections, get_total_pages(str(PDF_PATH)))
 tree = build_tree(page_ranges)
 
 if "selected_heading" not in st.session_state:
     st.session_state.selected_heading = str(page_ranges[0]["heading"])
 
-search = st.text_input("Filter", placeholder="Till exempel Parking Brake, ABS eller Rear Disc")
+search = st.text_input("Filter", placeholder="Till exempel Parking Brake, Audio eller Rear Wiper")
 if search:
     visible_ranges = [
         item for item in page_ranges if search.lower() in str(item["heading"]).lower()
