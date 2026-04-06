@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import os
 import re
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from pypdf import PdfReader
 
 
 PDF_PATH = Path(__file__).with_name("Hyundai-i30-FD-2007-2012-factory-service-manual.pdf")
+PDF_WEB_URL = "https://github.com/erik6000/hyundaii302008manual/blob/main/Hyundai-i30-FD-2007-2012-factory-service-manual.pdf"
 
 KNOWN_SUFFIX_FIXES = {
     "Components and": "Components and Components Location",
@@ -139,13 +139,6 @@ def render_section_pages(pdf_path: str, start_page: int, end_page: int, zoom: fl
     return pages
 
 
-def open_pdf_in_default_app() -> None:
-    try:
-        os.startfile(PDF_PATH)  # type: ignore[attr-defined]
-    except Exception as exc:  # pragma: no cover
-        st.error(f"Kunde inte öppna PDF:en externt: {exc}")
-
-
 def render_tree(node: dict[str, dict[str, object]], path: list[str] | None = None) -> None:
     path = path or []
     for label, child in node.items():
@@ -239,8 +232,7 @@ with right_col:
     with meta3:
         st.metric("Pages", int(selected["end_page"]) - int(selected["start_page"]) + 1)
 
-    if st.button("Open full PDF externally", key="open-external", width="stretch"):
-        open_pdf_in_default_app()
+    st.link_button("Open full PDF in browser", PDF_WEB_URL, use_container_width=True)
 
     section_images = render_section_pages(
         str(PDF_PATH),
