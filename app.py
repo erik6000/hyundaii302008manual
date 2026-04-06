@@ -54,17 +54,18 @@ def finalize_heading(heading: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def extract_brake_sections(pdf_path: str) -> list[dict[str, object]]:
+def extract_sections(pdf_path: str, prefix: str) -> list[dict[str, object]]:
     reader = PdfReader(pdf_path)
     results: list[dict[str, object]] = []
     seen: set[tuple[str, int]] = set()
+    match_prefix = prefix + " > "
 
     for page_number, page in enumerate(reader.pages, start=1):
         lines = [normalize_line(line) for line in (page.extract_text() or "").splitlines()]
         index = 0
         while index < len(lines):
             line = lines[index]
-            if not line.startswith("Brake System > "):
+            if not line.startswith(match_prefix):
                 index += 1
                 continue
 
@@ -139,7 +140,11 @@ def render_section_pages(pdf_path: str, start_page: int, end_page: int, zoom: fl
     return pages
 
 
-def render_tree(node: dict[str, dict[str, object]], path: list[str] | None = None) -> None:
+def render_tree(
+    node: dict[str, dict[str, object]],
+    selected_key: str,
+    path: list[str] | None = None,
+) -> None:
     path = path or []
     for label, child in node.items():
         current_path = path + [label]
@@ -148,99 +153,129 @@ def render_tree(node: dict[str, dict[str, object]], path: list[str] | None = Non
                 if child["heading"]:
                     if st.button(
                         "Open section",
-                        key=f"branch-{'-'.join(current_path)}",
+                        key=f"branch-{selected_key}-{'-'.join(current_path)}",
                         width="stretch",
                     ):
-                        st.session_state.selected_heading = child["heading"]
-                render_tree(child["children"], current_path)
+                        st.session_state[selected_key] = child["heading"]
+                render_tree(child["children"], selected_key, current_path)
         else:
-            is_selected = st.session_state.get("selected_heading") == child["heading"]
+            is_selected = st.session_state.get(selected_key) == child["heading"]
             label_text = f"{'• ' if is_selected else ''}{label}"
-            if st.button(label_text, key=f"leaf-{'-'.join(current_path)}", width="stretch"):
-                st.session_state.selected_heading = child["heading"]
+            if st.button(label_text, key=f"leaf-{selected_key}-{'-'.join(current_path)}", width="stretch"):
+                st.session_state[selected_key] = child["heading"]
 
 
-st.set_page_config(page_title="Hyundai i30 Brake System", layout="wide")
+def render_section_tab(
+    prefix: str,
+    tab_key: str,
+    search_placeholder: str,
+    no_sections_msg: str,
+) -> None:
+    all_sections = extract_sections(str(PDF_PATH), prefix)
+    filtered = [s for s in all_sections if s["parts"][0] == prefix]
 
-st.title("Hyundai i30 brake system navigator")
+    if not filtered:
+        st.error(no_sections_msg)
+        return
+
+    total = get_total_pages(str(PDF_PATH))
+    page_ranges = section_ranges(filtered, total)
+
+    selected_key = f"selected_heading_{tab_key}"
+    if selected_key not in st.session_state:
+        st.session_state[selected_key] = str(page_ranges[0]["heading"])
+
+    search = st.text_input("Filter", placeholder=search_placeholder, key=f"search_{tab_key}")
+    if search:
+        visible_ranges = [
+            item for item in page_ranges if search.lower() in str(item["heading"]).lower()
+        ]
+    else:
+        visible_ranges = page_ranges
+
+    if not visible_ranges:
+        st.warning("Inga sektioner matchar filtret.")
+        return
+
+    visible_tree = build_tree(visible_ranges)
+    selected = next(
+        (item for item in page_ranges if item["heading"] == st.session_state[selected_key]),
+        visible_ranges[0],
+    )
+    st.session_state[selected_key] = str(selected["heading"])
+
+    left_col, right_col = st.columns([1, 3])
+
+    with left_col:
+        st.markdown("**Navigation**")
+        quick_jump_options = [str(item["heading"]) for item in visible_ranges]
+        current_index = (
+            quick_jump_options.index(str(selected["heading"]))
+            if str(selected["heading"]) in quick_jump_options
+            else 0
+        )
+        quick_jump_value = st.selectbox(
+            "Quick jump",
+            options=quick_jump_options,
+            index=current_index,
+            key=f"quick_jump_{tab_key}",
+        )
+        st.session_state[selected_key] = quick_jump_value
+        selected = next(
+            (item for item in page_ranges if item["heading"] == st.session_state[selected_key]),
+            visible_ranges[0],
+        )
+        st.divider()
+        render_tree(visible_tree, selected_key)
+
+    with right_col:
+        st.subheader(str(selected["parts"][-1]))
+        st.write(" > ".join(selected["parts"]))
+        meta1, meta2, meta3 = st.columns([1, 1, 1])
+        with meta1:
+            st.metric("Start page", int(selected["start_page"]))
+        with meta2:
+            st.metric("End page", int(selected["end_page"]))
+        with meta3:
+            st.metric("Pages", int(selected["end_page"]) - int(selected["start_page"]) + 1)
+
+        st.link_button("Open full PDF in browser", PDF_WEB_URL, use_container_width=True)
+
+        section_images = render_section_pages(
+            str(PDF_PATH),
+            int(selected["start_page"]),
+            int(selected["end_page"]),
+        )
+
+        with st.container(height=950):
+            for page_number, image_bytes in section_images:
+                st.markdown(f"**Page {page_number}**")
+                st.image(image_bytes, width="stretch")
+
+
+st.set_page_config(page_title="Hyundai i30 Manual Navigator", layout="wide")
+
+st.title("Hyundai i30 manual navigator")
 st.caption("Träd till vänster. Hela vald sektion till höger i ett scrollbart läsfönster.")
 
 if not PDF_PATH.exists():
     st.error(f"PDF saknas: {PDF_PATH}")
     st.stop()
 
-all_sections = extract_brake_sections(str(PDF_PATH))
-brake_sections = [section for section in all_sections if section["parts"][0] == "Brake System"]
+tab_brake, tab_body = st.tabs(["🔧 Brake System", "🚗 Body"])
 
-if not brake_sections:
-    st.error("Inga Brake System-sektioner hittades i PDF:en.")
-    st.stop()
-
-page_ranges = section_ranges(brake_sections, get_total_pages(str(PDF_PATH)))
-tree = build_tree(page_ranges)
-
-if "selected_heading" not in st.session_state:
-    st.session_state.selected_heading = str(page_ranges[0]["heading"])
-
-search = st.text_input("Filter", placeholder="Till exempel Parking Brake, ABS eller Rear Disc")
-if search:
-    visible_ranges = [
-        item for item in page_ranges if search.lower() in str(item["heading"]).lower()
-    ]
-else:
-    visible_ranges = page_ranges
-
-if not visible_ranges:
-    st.warning("Inga sektioner matchar filtret.")
-    st.stop()
-
-visible_tree = build_tree(visible_ranges)
-selected = next(
-    (item for item in page_ranges if item["heading"] == st.session_state.selected_heading),
-    visible_ranges[0],
-)
-st.session_state.selected_heading = str(selected["heading"])
-
-left_col, right_col = st.columns([1, 3])
-
-with left_col:
-    st.markdown("**Navigation**")
-    quick_jump_options = [str(item["heading"]) for item in visible_ranges]
-    current_index = (
-        quick_jump_options.index(str(selected["heading"]))
-        if str(selected["heading"]) in quick_jump_options
-        else 0
-    )
-    quick_jump_value = st.selectbox(
-        "Quick jump",
-        options=quick_jump_options,
-        index=current_index,
-        key="quick_jump_heading",
-    )
-    st.session_state.selected_heading = quick_jump_value
-    st.divider()
-    render_tree(visible_tree)
-
-with right_col:
-    st.subheader(str(selected["parts"][-1]))
-    st.write(" > ".join(selected["parts"]))
-    meta1, meta2, meta3 = st.columns([1, 1, 1])
-    with meta1:
-        st.metric("Start page", int(selected["start_page"]))
-    with meta2:
-        st.metric("End page", int(selected["end_page"]))
-    with meta3:
-        st.metric("Pages", int(selected["end_page"]) - int(selected["start_page"]) + 1)
-
-    st.link_button("Open full PDF in browser", PDF_WEB_URL, use_container_width=True)
-
-    section_images = render_section_pages(
-        str(PDF_PATH),
-        int(selected["start_page"]),
-        int(selected["end_page"]),
+with tab_brake:
+    render_section_tab(
+        prefix="Brake System",
+        tab_key="brake",
+        search_placeholder="Till exempel Parking Brake, ABS eller Rear Disc",
+        no_sections_msg="Inga Brake System-sektioner hittades i PDF:en.",
     )
 
-    with st.container(height=950):
-        for page_number, image_bytes in section_images:
-            st.markdown(f"**Page {page_number}**")
-            st.image(image_bytes, width="stretch")
+with tab_body:
+    render_section_tab(
+        prefix="Body",
+        tab_key="body",
+        search_placeholder="Till exempel Hood, Door, Bumper eller Seat",
+        no_sections_msg="Inga Body-sektioner hittades i PDF:en.",
+    )
