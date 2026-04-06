@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import re
+from collections import Counter
 from pathlib import Path
 
 import fitz
@@ -53,10 +54,71 @@ def finalize_heading(heading: str) -> str:
     return heading.strip()
 
 
+def is_wrapper_heading(parts: list[str]) -> bool:
+    return (
+        len(parts) >= 4
+        and parts[0].endswith("(FD)")
+        and parts[1].isdigit()
+    )
+
+
+def is_title_like_part(part: str, allow_numeric_start: bool = True) -> bool:
+    if not part:
+        return False
+
+    stripped = part.strip()
+    first_char = stripped[0]
+    if not first_char.isalpha() and not (allow_numeric_start and first_char.isdigit()):
+        return False
+
+    if any(token in stripped for token in ("•", "·", "[", "]", "<", "=", "|", ";")):
+        return False
+
+    if len(stripped) > 90:
+        return False
+
+    if stripped[0].islower():
+        return False
+
+    letter_count = sum(char.isalpha() for char in stripped)
+    if letter_count == 0:
+        return False
+
+    return True
+
+
+def is_title_like_root(part: str) -> bool:
+    if not is_title_like_part(part, allow_numeric_start=False):
+        return False
+
+    word_count = len(part.split())
+    if word_count > 4:
+        return False
+
+    return True
+
+
+def is_valid_heading_parts(parts: list[str]) -> bool:
+    if len(parts) < 2:
+        return False
+
+    if is_wrapper_heading(parts):
+        return False
+
+    if not is_title_like_root(parts[0]):
+        return False
+
+    for part in parts[1:]:
+        if not is_title_like_part(part):
+            return False
+
+    return True
+
+
 @st.cache_data(show_spinner=False)
-def extract_brake_sections(pdf_path: str) -> list[dict[str, object]]:
+def extract_manual_sections(pdf_path: str) -> list[dict[str, object]]:
     reader = PdfReader(pdf_path)
-    results: list[dict[str, object]] = []
+    candidates: list[dict[str, object]] = []
     seen: set[tuple[str, int]] = set()
 
     for page_number, page in enumerate(reader.pages, start=1):
@@ -64,7 +126,7 @@ def extract_brake_sections(pdf_path: str) -> list[dict[str, object]]:
         index = 0
         while index < len(lines):
             line = lines[index]
-            if not line.startswith("Brake System > "):
+            if " > " not in line:
                 index += 1
                 continue
 
@@ -76,14 +138,25 @@ def extract_brake_sections(pdf_path: str) -> list[dict[str, object]]:
 
             heading = finalize_heading(heading)
             parts = [part.strip() for part in heading.split(">") if part.strip()]
-            if len(parts) >= 2:
+            if is_valid_heading_parts(parts):
                 key = (heading, page_number)
                 if key not in seen:
                     seen.add(key)
-                    results.append({"heading": heading, "parts": parts, "page": page_number})
+                    candidates.append({"heading": heading, "parts": parts, "page": page_number})
 
             index = lookahead
 
+    root_counts = Counter(str(item["parts"][0]) for item in candidates)
+    root_first_pages: dict[str, int] = {}
+    for item in candidates:
+        root = str(item["parts"][0])
+        root_first_pages[root] = min(root_first_pages.get(root, int(item["page"])), int(item["page"]))
+
+    results = [
+        item
+        for item in candidates
+        if root_counts[str(item["parts"][0])] >= 3 or root_first_pages[str(item["parts"][0])] <= 10
+    ]
     results.sort(key=lambda item: (int(item["page"]), str(item["heading"])))
     return results
 
@@ -144,7 +217,7 @@ def render_tree(node: dict[str, dict[str, object]], path: list[str] | None = Non
     for label, child in node.items():
         current_path = path + [label]
         if child["children"]:
-            with st.expander(label, expanded=len(current_path) <= 2):
+            with st.expander(label, expanded=False):
                 if child["heading"]:
                     if st.button(
                         "Open section",
@@ -160,29 +233,27 @@ def render_tree(node: dict[str, dict[str, object]], path: list[str] | None = Non
                 st.session_state.selected_heading = child["heading"]
 
 
-st.set_page_config(page_title="Hyundai i30 Brake System", layout="wide")
+st.set_page_config(page_title="Hyundai i30 2008 Manual", layout="wide")
 
-st.title("Hyundai i30 brake system navigator")
-st.caption("Träd till vänster. Hela vald sektion till höger i ett scrollbart läsfönster.")
+st.title("Hyundai i30 2008 Manual")
+st.caption("Träd till vänster. Hela vald manualsektion till höger i ett scrollbart läsfönster.")
 
 if not PDF_PATH.exists():
     st.error(f"PDF saknas: {PDF_PATH}")
     st.stop()
 
-all_sections = extract_brake_sections(str(PDF_PATH))
-brake_sections = [section for section in all_sections if section["parts"][0] == "Brake System"]
+all_sections = extract_manual_sections(str(PDF_PATH))
 
-if not brake_sections:
-    st.error("Inga Brake System-sektioner hittades i PDF:en.")
+if not all_sections:
+    st.error("Inga manualsektioner hittades i PDF:en.")
     st.stop()
 
-page_ranges = section_ranges(brake_sections, get_total_pages(str(PDF_PATH)))
-tree = build_tree(page_ranges)
+page_ranges = section_ranges(all_sections, get_total_pages(str(PDF_PATH)))
 
 if "selected_heading" not in st.session_state:
     st.session_state.selected_heading = str(page_ranges[0]["heading"])
 
-search = st.text_input("Filter", placeholder="Till exempel Parking Brake, ABS eller Rear Disc")
+search = st.text_input("Filter", placeholder="Till exempel Brake System, Parking Brake eller Fuel System")
 if search:
     visible_ranges = [
         item for item in page_ranges if search.lower() in str(item["heading"]).lower()
@@ -232,7 +303,7 @@ with right_col:
     with meta3:
         st.metric("Pages", int(selected["end_page"]) - int(selected["start_page"]) + 1)
 
-    st.link_button("Open full PDF in browser", PDF_WEB_URL, use_container_width=True)
+    st.link_button("Open full PDF in browser", PDF_WEB_URL, width="stretch")
 
     section_images = render_section_pages(
         str(PDF_PATH),
